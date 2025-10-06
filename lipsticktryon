@@ -1,113 +1,63 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Lipstick Virtual Try-On</title>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
-  <style>
-    body {
-      margin: 0;
-      overflow: hidden;
-      background: #000;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-    }
-    video, canvas {
-      position: absolute;
-      transform: scaleX(-1); /* Mirror the camera */
-    }
-    #colorPicker {
-      position: absolute;
-      top: 20px;
-      left: 20px;
-      z-index: 2;
-    }
-  </style>
-</head>
-<body>
-  <input type="color" id="colorPicker" value="#d45a73" />
-  <video id="video" autoplay muted playsinline></video>
-  <canvas id="canvas"></canvas>
+<script type="module">
+  import { pipeline } from "https://cdn.jsdelivr.net/npm/@xenova/transformers";
 
-  <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const colorPicker = document.getElementById('colorPicker');
+  const video = document.getElementById("video");
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  const colorPicker = document.getElementById("colorPicker");
+  const opacityRange = document.getElementById("opacityRange");
 
-    async function setupCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      video.srcObject = stream;
-      await new Promise((r) => (video.onloadedmetadata = r));
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
+  async function setupCamera() {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    await new Promise((r) => (video.onloadedmetadata = r));
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
 
-    const faceMesh = new FaceMesh({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-    });
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+  const segmenter = await pipeline("image-segmentation", "jonathandinu/face-parsing");
+  console.log("Model loaded.");
 
-    faceMesh.onResults((results) => {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  function hexToRgb(hex) {
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return {r,g,b};
+  }
 
-      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-        const landmarks = results.multiFaceLandmarks[0];
+  async function analyzeFrame() {
+    // Capture current frame as an image
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-        // Lip indices for upper + lower lips
-        const lipsIndices = [
-          // Outer lips
-          61, 146, 91, 181, 84, 17, 314, 405, 321, 375,
-          // Inner lips
-          78, 95, 88, 178, 87, 14, 317, 402, 318, 324
-        ];
+    // Run segmentation on the captured frame (converted to ImageData)
+    const result = await segmenter(frame);
 
-        ctx.beginPath();
-        lipsIndices.forEach((index, i) => {
-          const x = landmarks[index].x * canvas.width;
-          const y = landmarks[index].y * canvas.height;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.closePath();
+    // Extract mask
+    const mask = result.segmentation;
+    const {r,g,b} = hexToRgb(colorPicker.value);
+    const opacity = parseFloat(opacityRange.value);
+    const {data} = frame;
 
-        // Fill the lips with semi-transparent lipstick
-        ctx.fillStyle = hexToRgba(colorPicker.value, 0.5);
-        ctx.fill();
+    for (let i = 0; i < mask.length; i++) {
+      const cls = mask[i];
+      if (cls === 7 || cls === 8) { // upper and lower lip
+        const j = i * 4;
+        data[j]   = data[j]*(1-opacity) + r*opacity;
+        data[j+1] = data[j+1]*(1-opacity) + g*opacity;
+        data[j+2] = data[j+2]*(1-opacity) + b*opacity;
       }
-    });
-
-    function hexToRgba(hex, alpha) {
-      const r = parseInt(hex.slice(1, 3), 16);
-      const g = parseInt(hex.slice(3, 5), 16);
-      const b = parseInt(hex.slice(5, 7), 16);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
 
-    async function main() {
-      await setupCamera();
-      const camera = new Camera(video, {
-        onFrame: async () => {
-          await faceMesh.send({ image: video });
-        },
-        width: video.videoWidth,
-        height: video.videoHeight,
-      });
-      camera.start();
-    }
+    ctx.putImageData(frame, 0, 0);
+  }
 
-    main();
-  </script>
-</body>
-</html>
+  async function main() {
+    await setupCamera();
+
+    // Capture a frame every 2 seconds
+    setInterval(analyzeFrame, 2000);
+  }
+
+  main();
+</script>
